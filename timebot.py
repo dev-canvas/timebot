@@ -2,12 +2,14 @@ import asyncio
 import time
 import sqlite3
 from datetime import datetime, date
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
 import os
 
 API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -19,7 +21,8 @@ dp = Dispatcher(storage=storage)
 
 class TaskTimer(StatesGroup):
     waiting_task_number = State()
-    waiting_description = State()
+    waiting_description_choice = State()
+    waiting_description_text = State()
 
 
 # активные таймеры {user_id: {...}}
@@ -36,7 +39,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             task_number TEXT,
-            duration INTEGER,   -- в секундах
+            duration INTEGER,  -- в секундах
             date TEXT,
             time_start TEXT,
             description TEXT
@@ -134,7 +137,7 @@ async def stop_timer(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
 
-    # запоминаем id завершённой задачи, чтобы можно было дописать описание
+    # запоминаем id завершённой задачи
     await state.update_data(last_task_id=task_id)
 
     await message.answer(
@@ -154,16 +157,17 @@ async def stop_timer(message: types.Message, state: FSMContext):
         one_time_keyboard=True,
     )
     await message.answer("Добавить описание трудозатрат?", reply_markup=keyboard)
-    await state.set_state(TaskTimer.waiting_description)
+    await state.set_state(TaskTimer.waiting_description_choice)
 
 
-@dp.message(TaskTimer.waiting_description, F.text.in_(["✅ Да", "❌ Нет"]))
+@dp.message(TaskTimer.waiting_description_choice)
 async def handle_description_choice(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    text = message.text.strip()
     data = await state.get_data()
     task_id = data.get("last_task_id")
 
-        if not task_id:
+    if not task_id:
         await state.clear()
         await message.answer(
             "Не нашёл последнюю задачу. Используй кнопки ⏰ Начать / ⏹️ Стоп / 📊 Отчет за день.",
@@ -171,8 +175,7 @@ async def handle_description_choice(message: types.Message, state: FSMContext):
         )
         return
 
-    if message.text == "❌ Нет":
-        # просто выходим без описания
+    if text == "❌ Нет":
         await state.clear()
         await message.answer(
             "Окей, описание не добавлено.",
@@ -180,17 +183,26 @@ async def handle_description_choice(message: types.Message, state: FSMContext):
         )
         return
 
-    # если "✅ Да" — просим ввести текст
+    if text == "✅ Да":
+        await state.set_state(TaskTimer.waiting_description_text)
+        await message.answer(
+            "Пришлите текстовое описание, что делали по этой задаче.",
+            reply_markup=get_main_keyboard(),
+        )
+        return
+
+    # если пришло что-то другое — повторно спрашиваем
     await message.answer(
-        "Пришлите текстовое описание, что делали по этой задаче.",
-        reply_markup=get_main_keyboard(),
+        "Выберите '✅ Да' или '❌ Нет'.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="✅ Да"), KeyboardButton(text="❌ Нет")]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        ),
     )
-    # сохраняем id задачи и ждём текст
-    await state.update_data(last_task_id=task_id)
-    await state.set_state(TaskTimer.waiting_description)
 
 
-@dp.message(TaskTimer.waiting_description)
+@dp.message(TaskTimer.waiting_description_text)
 async def save_description(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     data = await state.get_data()
@@ -287,4 +299,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
