@@ -23,6 +23,7 @@ class TaskTimer(StatesGroup):
     waiting_task_number = State()
     waiting_description_choice = State()
     waiting_description_text = State()
+    waiting_report_date = State()
 
 
 # активные таймеры {user_id: {...}}
@@ -58,7 +59,8 @@ def get_main_keyboard():
         keyboard=[
             [KeyboardButton(text="⏰ Начать")],
             [KeyboardButton(text="⏹️ Стоп")],
-            [KeyboardButton(text="📊 Отчет за день")],
+            [KeyboardButton(text="📊 Отчет за сегодня")],
+            [KeyboardButton(text="📆 Отчет по дате")],
         ],
         resize_keyboard=True,
     )
@@ -69,7 +71,7 @@ def get_main_keyboard():
 async def start_handler(message: types.Message):
     await message.answer(
         "🕐 Секундомер для задач готов!\n"
-        "⏰ Начать / ⏹️ Стоп / 📊 Отчет за день",
+        "⏰ Начать / ⏹️ Стоп / 📊 Отчет за сегодня / 📆 Отчет по дате",
         reply_markup=get_main_keyboard(),
     )
 
@@ -170,7 +172,7 @@ async def handle_description_choice(message: types.Message, state: FSMContext):
     if not task_id:
         await state.clear()
         await message.answer(
-            "Не нашёл последнюю задачу. Используй кнопки ⏰ Начать / ⏹️ Стоп / 📊 Отчет за день.",
+            "Не нашёл последнюю задачу. Используй кнопки ⏰ Начать / ⏹️ Стоп / 📊 Отчет за сегодня / 📆 Отчет по дате.",
             reply_markup=get_main_keyboard(),
         )
         return
@@ -211,7 +213,7 @@ async def save_description(message: types.Message, state: FSMContext):
     if not task_id:
         await state.clear()
         await message.answer(
-            "Не нашёл последнюю задачу. Используй кнопки ⏰ Начать / ⏹️ Стоп / 📊 Отчет за день.",
+            "Не нашёл последнюю задачу. Используй кнопки ⏰ Начать / ⏹️ Стоп / 📊 Отчет за сегодня / 📆 Отчет по дате.",
             reply_markup=get_main_keyboard(),
         )
         return
@@ -234,10 +236,8 @@ async def save_description(message: types.Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "📊 Отчет за день")
-async def daily_report(message: types.Message):
-    user_id = message.from_user.id
-    today = date.today().isoformat()
+async def send_report_for_date(user_id: int, report_date: date, message: types.Message):
+    date_str = report_date.isoformat()
 
     conn = sqlite3.connect("tasks.db")
     cursor = conn.cursor()
@@ -248,13 +248,13 @@ async def daily_report(message: types.Message):
         WHERE user_id = ? AND date = ?
         ORDER BY time_start
         """,
-        (user_id, today),
+        (user_id, date_str),
     )
     tasks = cursor.fetchall()
     conn.close()
 
     if not tasks:
-        await message.answer("📊 За сегодня задач еще нет.")
+        await message.answer(f"📊 За {date_str} задач нет.")
         return
 
     total_seconds = sum(task[1] for task in tasks)
@@ -262,7 +262,7 @@ async def daily_report(message: types.Message):
     total_minutes, total_seconds = divmod(remainder, 60)
     total_str = f"{total_hours:02d}:{total_minutes:02d}:{total_seconds:02d}"
 
-    report_text = f"📊 *Отчет за {today}*\n\n"
+    report_text = f"📊 *Отчет за {date_str}*\n\n"
     report_text += f"*Всего времени: {total_str}*\n\n"
 
     for task_num, duration, start_time, description in tasks:
@@ -281,6 +281,40 @@ async def daily_report(message: types.Message):
     )
 
 
+@dp.message(F.text == "📊 Отчет за сегодня")
+async def daily_report_today(message: types.Message):
+    user_id = message.from_user.id
+    await send_report_for_date(user_id, date.today(), message)
+
+
+@dp.message(F.text == "📆 Отчет по дате")
+async def ask_report_date(message: types.Message, state: FSMContext):
+    await state.set_state(TaskTimer.waiting_report_date)
+    await message.answer(
+        "Введите дату для отчета в формате ГГГГ-ММ-ДД (например, 2025-12-12).",
+        reply_markup=get_main_keyboard(),
+    )
+
+
+@dp.message(TaskTimer.waiting_report_date)
+async def report_for_custom_date(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    text = message.text.strip()
+
+    try:
+        year, month, day = map(int, text.split("-"))
+        report_date = date(year, month, day)
+    except Exception:
+        await message.answer(
+            "Не получилось разобрать дату. Введите, пожалуйста, в формате ГГГГ-ММ-ДД, например: 2025-12-12.",
+            reply_markup=get_main_keyboard(),
+        )
+        return
+
+    await state.clear()
+    await send_report_for_date(user_id, report_date, message)
+
+
 @dp.message()
 async def ignore_messages(message: types.Message):
     user_id = message.from_user.id
@@ -288,7 +322,7 @@ async def ignore_messages(message: types.Message):
         await message.answer("⏳ Таймер работает! Нажми '⏹️ Стоп' для завершения.")
     else:
         await message.answer(
-            "Используй кнопки ⏰ Начать / ⏹️ Стоп / 📊 Отчет за день",
+            "Используй кнопки ⏰ Начать / ⏹️ Стоп / 📊 Отчет за сегодня / 📆 Отчет по дате",
             reply_markup=get_main_keyboard(),
         )
 
