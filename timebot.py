@@ -1,4 +1,169 @@
-    if not task_id:
+import asyncio
+import time
+import sqlite3
+from datetime import datetime, date
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+import os
+
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+bot = Bot(token=API_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+
+
+class TaskTimer(StatesGroup):
+    waiting_task_number = State()
+    waiting_description = State()
+
+
+# активные таймеры {user_id: {...}}
+active_timers = {}
+
+
+# Инициализация БД
+def init_db():
+    conn = sqlite3.connect("tasks.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            task_number TEXT,
+            duration INTEGER,   -- в секундах
+            date TEXT,
+            time_start TEXT,
+            description TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+
+def get_main_keyboard():
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="⏰ Начать")],
+            [KeyboardButton(text="⏹️ Стоп")],
+            [KeyboardButton(text="📊 Отчет за день")],
+        ],
+        resize_keyboard=True,
+    )
+    return keyboard
+
+
+@dp.message(Command("start"))
+async def start_handler(message: types.Message):
+    await message.answer(
+        "🕐 Секундомер для задач готов!\n"
+        "⏰ Начать / ⏹️ Стоп / 📊 Отчет за день",
+        reply_markup=get_main_keyboard(),
+    )
+
+
+@dp.message(F.text == "⏰ Начать")
+async def start_timer(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    if user_id in active_timers:
+        await message.answer("⏳ Таймер уже запущен! Сначала нажми '⏹️ Стоп'.")
+        return
+
+    await message.answer("📝 Введите номер задачи (например: 'Задача 1'):")
+    await state.set_state(TaskTimer.waiting_task_number)
+
+
+@dp.message(TaskTimer.waiting_task_number)
+async def save_task_number(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    task_number = message.text.strip()
+
+    active_timers[user_id] = {
+        "start_time": time.time(),
+        "task_number": task_number,
+        "date": date.today().isoformat(),
+    }
+
+    await state.clear()
+    await message.answer(
+        f"✅ Запущен таймер для *{task_number}*\n⏳ Время идет...",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+@dp.message(F.text == "⏹️ Стоп")
+async def stop_timer(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    if user_id not in active_timers:
+        await message.answer("⏰ Таймер не запущен! Нажми '⏰ Начать'.")
+        return
+
+    timer_data = active_timers.pop(user_id)
+    start_time = timer_data["start_time"]
+    task_number = timer_data["task_number"]
+    date_str = timer_data["date"]
+
+    elapsed = time.time() - start_time
+    minutes, seconds = divmod(int(elapsed), 60)
+    hours, minutes = divmod(minutes, 60)
+    time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    # сохраняем задачу в БД без описания (description = NULL)
+    conn = sqlite3.connect("tasks.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO tasks (user_id, task_number, duration, date, time_start, description)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, task_number, int(elapsed), date_str, datetime.now().strftime("%H:%M"), None),
+    )
+    task_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    # запоминаем id завершённой задачи, чтобы можно было дописать описание
+    await state.update_data(last_task_id=task_id)
+
+    await message.answer(
+        f"⏹️ *{task_number}* завершена!\n"
+        f"⏱️ Время: *{time_str}*\n"
+        f"📅 {date_str}",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard(),
+    )
+
+    # спрашиваем про описание
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Да"), KeyboardButton(text="❌ Нет")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await message.answer("Добавить описание трудозатрат?", reply_markup=keyboard)
+    await state.set_state(TaskTimer.waiting_description)
+
+
+@dp.message(TaskTimer.waiting_description, F.text.in_(["✅ Да", "❌ Нет"]))
+async def handle_description_choice(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    data = await state.get_data()
+    task_id = data.get("last_task_id")
+
+        if not task_id:
         await state.clear()
         await message.answer(
             "Не нашёл последнюю задачу. Используй кнопки ⏰ Начать / ⏹️ Стоп / 📊 Отчет за день.",
@@ -122,3 +287,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
