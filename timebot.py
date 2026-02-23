@@ -18,24 +18,21 @@ import csv
 from io import StringIO, BytesIO
 from pathlib import Path
 
-
 # ================== НАСТРОЙКИ БАЗЫ ДАННЫХ ==================
 # Путь к папке data
 DATA_DIR = Path("/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Путь к базе данных
-DB_PATH = DATA_DIR / str("tsks.db")
-
+DB_PATH = DATA_DIR / "tasks.db"
 
 # ================== НАСТРОЙКИ ==================
-# АДМИН ID - ИСПРАВЛЕНО: было , стало 471308373
-ADMIN_ID = 471308273 #os.getenv("ADMIN_ID")
-
+# АДМИН ID - ИСПРАВЛЕНО: конвертируем в int
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # ЮKassa / провайдер платежей
-PROVIDER_TOKEN = "381764678:TEST:163497"
+PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 
 # заполни в env
 PREMIUM_PRICE = 99  # руб/мес
@@ -45,7 +42,6 @@ PREMIUM_DESCRIPTION = "Доступ к экспорту в CSV и дополни
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
-
 
 # ================== ЧАСОВЫЕ ПОЯСА ==================
 class SimpleTimezone:
@@ -74,7 +70,6 @@ class SimpleTimezone:
 
 MOSCOW_TZ = SimpleTimezone("Europe/Moscow")
 
-
 # ================== STATE ==================
 class TaskTimer(StatesGroup):
     waiting_task_number = State()
@@ -87,15 +82,15 @@ class TaskTimer(StatesGroup):
     waiting_timezone_choice = State()
     waiting_custom_timezone = State()
     waiting_broadcast_message = State()
-    waiting_broadcast_photo = State()  # НОВОЕ: для ожидания фото
+    waiting_broadcast_photo = State()
     waiting_msg_to_all_message = State()
+
 
 # активные таймеры {user_id: {...}}
 active_timers = {}
 
-
 # ================== БАЗА ДАННЫХ ==================
-def init_db():  # ← ЗАМЕНИТЬ НА ЭТО
+def init_db():
     """Ваша функция создания базы с расширенными таблицами"""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -145,7 +140,6 @@ def log_user(user_id: int, username: str, first_name: str):
     """Логирует нового пользователя в таблицу users"""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         """
         INSERT OR IGNORE INTO users (user_id, username, first_name, joined_date, is_admin, is_premium)
@@ -160,7 +154,6 @@ def log_user(user_id: int, username: str, first_name: str):
             0,
         ),
     )
-
     conn.commit()
     conn.close()
 
@@ -186,7 +179,6 @@ def get_statistics():
     cursor.execute("SELECT SUM(duration) FROM tasks")
     total_seconds = cursor.fetchone()[0] or 0
     total_hours = total_seconds / 3600
-
     avg_hours = total_hours / total_users if total_users > 0 else 0
 
     conn.close()
@@ -238,20 +230,19 @@ def get_user_stats(user_id: int):
 
 
 def get_all_user_ids() -> list[int]:
-    """Список всех user_id (включая премиум, кроме, например, бота самого себя)."""
+    """Список всех user_id"""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM users ORDER BY user_id")
     users = cursor.fetchall()
     conn.close()
-    return [user_id for (user_id,) in users]    
-    
-    
+    return [user_id for (user_id,) in users]
+
+
 def get_all_users():
     """Получает список всех пользователей с их статистикой"""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute("SELECT user_id FROM users ORDER BY user_id")
     users = cursor.fetchall()
     conn.close()
@@ -259,12 +250,10 @@ def get_all_users():
     users_list = []
     for (user_id,) in users:
         stats = get_user_stats(user_id)
-        users_list.append(
-            {
-                "user_id": user_id,
-                **stats,
-            }
-        )
+        users_list.append({
+            "user_id": user_id,
+            **stats,
+        })
 
     return users_list
 
@@ -273,14 +262,12 @@ def get_non_premium_users():
     """Получает список пользователей БЕЗ премиум-статуса"""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         "SELECT user_id FROM users WHERE is_premium = 0 AND user_id != ?",
         (ADMIN_ID,),
     )
     users = cursor.fetchall()
     conn.close()
-
     return [user_id for (user_id,) in users]
 
 
@@ -304,16 +291,13 @@ def set_premium_status(user_id: int, status: int) -> bool:
     """Устанавливает премиум-статус пользователю (0/1)"""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         "UPDATE users SET is_premium = ? WHERE user_id = ?",
         (1 if status else 0, user_id),
     )
-
     conn.commit()
     updated = cursor.rowcount > 0
     conn.close()
-
     return updated
 
 
@@ -321,49 +305,6 @@ def generate_csv_report(user_id: int) -> BytesIO:
     """Генерирует CSV файл с отчетом по задачам"""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        SELECT task_number, date, time_start, duration, description
-        FROM tasks
-        WHERE user_id = ?
-        ORDER BY date DESC, time_start DESC
-        """,
-        (user_id,),
-    )
-
-    tasks = cursor.fetchall()
-    conn.close()
-
-    output = StringIO()
-    writer = csv.writer(output, lineterminator="\n")
-
-    headers = [
-        "№ по порядку",
-        "Дата задачи",
-        "Наименование задачи",
-        "Время начала",
-        "Время окончания",
-        "Всего затраченное время",
-        "Содержание работ",
-    ]
-
-    writer.writerow(headers)
-
-    if tasks:
-        for idx, (task_number, task_date, time_start, duration, description) in enumerate(
-            tasks, 1
-        ):
-            end_time = datetime.strptime(time_start, "%H:%M")
-            duration_td = timedelta(seconds=duration)
-            start_time = end_time - duration_td
-
-            hours, remainder = divmod(duration, 3600)
-            minutes, seconds = divmod(remainder, 60)
-def generate_csv_report(user_id: int) -> BytesIO:
-    """Генерирует CSV файл с отчетом по задачам"""
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
     cursor.execute(
         """
         SELECT task_number, date, time_start, duration, description
@@ -391,9 +332,7 @@ def generate_csv_report(user_id: int) -> BytesIO:
     writer.writerow(headers)
 
     if tasks:
-        for idx, (task_number, task_date, time_start, duration, description) in enumerate(
-            tasks, 1
-        ):
+        for idx, (task_number, task_date, time_start, duration, description) in enumerate(tasks, 1):
             # time_start в БД = фактическое время окончания
             end_time = datetime.strptime(time_start, "%H:%M")
             duration_td = timedelta(seconds=duration)
@@ -419,15 +358,13 @@ def generate_csv_report(user_id: int) -> BytesIO:
 
 
 def get_user_timezone(user_id: int) -> SimpleTimezone:
-    """Получает часовой пояс пользователя из БД или возвращает московский по умолчанию"""
+    """Получает часовой пояс пользователя из БД"""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         "SELECT timezone FROM user_timezones WHERE user_id = ?",
         (user_id,),
     )
-
     result = cursor.fetchone()
     conn.close()
 
@@ -436,7 +373,6 @@ def get_user_timezone(user_id: int) -> SimpleTimezone:
             return SimpleTimezone(result[0])
         except Exception:
             return MOSCOW_TZ
-
     return MOSCOW_TZ
 
 
@@ -447,15 +383,12 @@ def save_user_timezone(user_id: int, timezone_str: str) -> bool:
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         "INSERT OR REPLACE INTO user_timezones (user_id, timezone) VALUES (?, ?)",
         (user_id, timezone_str),
     )
-
     conn.commit()
     conn.close()
-
     return True
 
 
@@ -507,40 +440,31 @@ def get_calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
 
     prev_year = year - 1 if month == 1 else year
     prev_month = 12 if month == 1 else month - 1
-
     next_year = year + 1 if month == 12 else year
     next_month = 1 if month == 12 else month + 1
 
-    keyboard.append(
-        [
-            InlineKeyboardButton(
-                text="◀", callback_data=f"cal:{prev_year}:{prev_month:02d}"
-            ),
-            InlineKeyboardButton(
-                text=f"{datetime(year, month, 1).strftime('%B %Y')}",
-                callback_data="noop",
-            ),
-            InlineKeyboardButton(
-                text="▶", callback_data=f"cal:{next_year}:{next_month:02d}"
-            ),
-        ]
-    )
-
-    # days_of_week = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-    # keyboard.append(
-        #[InlineKeyboardButton(text=day, callback_data="noop") for day in days_of_week]
-   # )
+    keyboard.append([
+        InlineKeyboardButton(
+            text="◀", callback_data=f"cal:{prev_year}:{prev_month:02d}"
+        ),
+        InlineKeyboardButton(
+            text=f"{datetime(year, month, 1).strftime('%B %Y')}",
+            callback_data="noop",
+        ),
+        InlineKeyboardButton(
+            text="▶", callback_data=f"cal:{next_year}:{next_month:02d}"
+        ),
+    ])
 
     first_day = datetime(year, month, 1)
-
     if month < 12:
         last_day = datetime(year, month + 1, 1) - timedelta(days=1)
     else:
         last_day = datetime(year + 1, 1, 1) - timedelta(days=1)
 
     start_weekday = (first_day.weekday() + 1) % 7
-
     week = []
+
     for _ in range(start_weekday):
         week.append(InlineKeyboardButton(text=" ", callback_data="noop"))
 
@@ -551,7 +475,6 @@ def get_calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
                 callback_data=f"date:{year}:{month:02d}:{day:02d}",
             )
         )
-
         if len(week) == 7:
             keyboard.append(week)
             week = []
@@ -569,12 +492,10 @@ def get_calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
 def get_tasks_keyboard(user_id: int) -> InlineKeyboardMarkup | None:
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         "SELECT DISTINCT task_number FROM tasks WHERE user_id = ? ORDER BY task_number",
         (user_id,),
     )
-
     tasks = cursor.fetchall()
     conn.close()
 
@@ -588,7 +509,6 @@ def get_tasks_keyboard(user_id: int) -> InlineKeyboardMarkup | None:
         row.append(
             InlineKeyboardButton(text=task_num, callback_data=f"task:{task_num}")
         )
-
         if len(row) == 2 or idx == len(tasks) - 1:
             keyboard.append(row)
             row = []
@@ -611,12 +531,10 @@ async def start_handler(message: types.Message, state: FSMContext):
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         "SELECT timezone FROM user_timezones WHERE user_id = ?",
         (user_id,),
     )
-
     has_timezone = cursor.fetchone()
     conn.close()
 
@@ -637,7 +555,6 @@ async def start_handler(message: types.Message, state: FSMContext):
 async def cancel_handler(message: types.Message, state: FSMContext):
     """Отмена текущего действия"""
     current_state = await state.get_state()
-    
     if current_state is None:
         await message.answer(
             "Нечего отменять.",
@@ -646,8 +563,6 @@ async def cancel_handler(message: types.Message, state: FSMContext):
         return
 
     await state.clear()
-    
-    # Возвращаем главную клавиатуру
     await message.answer(
         "✅ Действие отменено.",
         reply_markup=get_main_keyboard(),
@@ -671,7 +586,6 @@ async def handle_timezone_choice(message: types.Message, state: FSMContext):
 
     if text in timezone_map:
         save_user_timezone(user_id, timezone_map[text])
-
         if text == "Пропустить":
             await message.answer("⏭️ Установлен московский пояс (UTC+3)")
         else:
@@ -682,14 +596,12 @@ async def handle_timezone_choice(message: types.Message, state: FSMContext):
             "🕐 Секундомер для задач готов!",
             reply_markup=get_main_keyboard(),
         )
-
     elif text == "Другой часовой пояс":
         await state.set_state(TaskTimer.waiting_custom_timezone)
         await message.answer(
             "Введите часовой пояс из списка поддерживаемых:\n"
             "Europe/Moscow, Asia/Tbilisi, Europe/Samara, Asia/Yekaterinburg, Europe/London, Asia/Bangkok"
         )
-
     else:
         await message.answer(
             "Пожалуйста, выберите из предложенных вариантов или введите свой.",
@@ -709,7 +621,6 @@ async def handle_custom_timezone(message: types.Message, state: FSMContext):
             "🕐 Секундомер для задач готов!",
             reply_markup=get_main_keyboard(),
         )
-
     else:
         await message.answer(
             f"❌ Часовой пояс '{timezone_str}' не найден.\n"
@@ -773,7 +684,6 @@ async def stop_timer(message: types.Message, state: FSMContext):
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         """
         INSERT INTO tasks (user_id, task_number, duration, date, time_start, description)
@@ -781,13 +691,11 @@ async def stop_timer(message: types.Message, state: FSMContext):
         """,
         (user_id, task_number, int(elapsed), date_str, time_start_str, None),
     )
-
     task_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
     await state.update_data(last_task_id=task_id)
-
     await message.answer(
         f"⏹️ *{task_number}* завершена!\n"
         f"⏱️ Время: *{time_str}*\n"
@@ -801,7 +709,6 @@ async def stop_timer(message: types.Message, state: FSMContext):
         resize_keyboard=True,
         one_time_keyboard=True,
     )
-
     await message.answer("Добавить описание трудозатрат?", reply_markup=keyboard)
     await state.set_state(TaskTimer.waiting_description_choice)
 
@@ -810,7 +717,6 @@ async def stop_timer(message: types.Message, state: FSMContext):
 async def handle_description_choice(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     text = message.text.strip()
-
     data = await state.get_data()
     task_id = data.get("last_task_id")
 
@@ -851,7 +757,6 @@ async def handle_description_choice(message: types.Message, state: FSMContext):
 @dp.message(TaskTimer.waiting_description_text)
 async def save_description(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-
     data = await state.get_data()
     task_id = data.get("last_task_id")
 
@@ -867,12 +772,10 @@ async def save_description(message: types.Message, state: FSMContext):
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         "UPDATE tasks SET description = ? WHERE id = ? AND user_id = ?",
         (description, task_id, user_id),
     )
-
     conn.commit()
     conn.close()
 
@@ -888,7 +791,6 @@ async def send_report_for_date(user_id: int, report_date: date, message: types.M
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         """
         SELECT task_number, duration, time_start, description
@@ -898,7 +800,6 @@ async def send_report_for_date(user_id: int, report_date: date, message: types.M
         """,
         (user_id, date_str),
     )
-
     tasks = cursor.fetchall()
     conn.close()
 
@@ -921,7 +822,6 @@ async def send_report_for_date(user_id: int, report_date: date, message: types.M
         hours, remainder = divmod(duration, 3600)
         minutes, seconds = divmod(remainder, 60)
         task_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
         report_text += f"• *{task_num}*: {task_time} ({start_time})\n"
         if description:
             report_text += f"  └ {description}\n"
@@ -936,7 +836,6 @@ async def send_report_for_date(user_id: int, report_date: date, message: types.M
 async def send_report_for_task(user_id: int, task_number: str, message: types.Message):
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute(
         """
         SELECT date, duration, time_start, description
@@ -946,7 +845,6 @@ async def send_report_for_task(user_id: int, task_number: str, message: types.Me
         """,
         (user_id, task_number),
     )
-
     tasks = cursor.fetchall()
     conn.close()
 
@@ -978,7 +876,6 @@ async def send_report_for_task(user_id: int, task_number: str, message: types.Me
     for task_date in sorted(tasks_by_date.keys()):
         day_entries = tasks_by_date[task_date]
         day_duration = sum(entry[0] for entry in day_entries)
-
         day_hours, remainder = divmod(day_duration, 3600)
         day_minutes, day_secs = divmod(remainder, 60)
         day_str = f"{day_hours:02d}:{day_minutes:02d}:{day_secs:02d}"
@@ -989,7 +886,6 @@ async def send_report_for_task(user_id: int, task_number: str, message: types.Me
             hours, remainder = divmod(duration, 3600)
             minutes, seconds = divmod(remainder, 60)
             entry_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
             report_text += f"  • {time_start}: {entry_time}\n"
             if description:
                 report_text += f"    └ {description}\n"
@@ -1031,7 +927,6 @@ async def ask_report_date(message: types.Message, state: FSMContext):
 @dp.message(TaskTimer.waiting_reports_menu, F.text == "📋 Отчет по задаче")
 async def ask_report_task(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-
     tasks_kb = get_tasks_keyboard(user_id)
 
     if not tasks_kb:
@@ -1051,9 +946,8 @@ async def ask_report_task(message: types.Message, state: FSMContext):
 
 @dp.message(TaskTimer.waiting_reports_menu, F.text == "📥 Экспорт в CSV")
 async def export_to_csv(message: types.Message, state: FSMContext):
-    """Экспортирует данные в CSV, с предложением купить премиум"""
+    """Экспортирует данные в CSV"""
     user_id = message.from_user.id
-
     await state.clear()
 
     if not is_premium_or_admin(user_id):
@@ -1066,7 +960,6 @@ async def export_to_csv(message: types.Message, state: FSMContext):
                 ]
             ]
         )
-
         await message.answer(
             "❌ Доступ к экспорту в CSV доступен только премиум-пользователям.\n\n"
             "Оформите премиум за 99 ₽, чтобы выгружать свои задачи в CSV. | Чтобы вернуться в главное меню отправьте мне любой символ.",
@@ -1076,7 +969,6 @@ async def export_to_csv(message: types.Message, state: FSMContext):
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-
     cursor.execute("SELECT COUNT(*) FROM tasks WHERE user_id = ?", (user_id,))
     task_count = cursor.fetchone()[0]
     conn.close()
@@ -1099,12 +991,10 @@ async def export_to_csv(message: types.Message, state: FSMContext):
             ),
             caption=f"📊 Отчет по вашим задачам\n📋 Всего записей: {task_count}",
         )
-
         await message.answer(
             "✅ Готово!",
             reply_markup=get_main_keyboard(),
         )
-
     except Exception as e:
         print(f"CSV Export Error: {e}")
         await message.answer(
@@ -1126,7 +1016,6 @@ async def back_to_main_menu(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "buy_premium")
 async def buy_premium_callback(callback: types.CallbackQuery):
     await callback.answer()
-
     payload = f"premium_{callback.from_user.id}"
 
     await callback.message.answer_invoice(
@@ -1155,12 +1044,10 @@ async def successful_payment(message: types.Message):
         return
 
     payload = message.successful_payment.invoice_payload
-
     if not payload.startswith("premium_"):
         return
 
     set_premium_status(user_id, 1)
-
     await message.answer(
         "✅ Премиум активирован!\nТеперь вам доступен экспорт задач в CSV.",
         reply_markup=get_main_keyboard(),
@@ -1170,7 +1057,7 @@ async def successful_payment(message: types.Message):
 # ================== АДМИН-КОМАНДЫ ==================
 @dp.message(Command("msg_to_all"))
 async def start_msg_to_all(message: types.Message, state: FSMContext):
-    """Начало рассылки всем пользователям (премиум + не премиум)."""
+    """Начало рассылки всем пользователям"""
     if message.from_user.id != ADMIN_ID:
         await message.answer(
             "❌ Доступ запрещен. Эта команда только для администратора.",
@@ -1187,7 +1074,7 @@ async def start_msg_to_all(message: types.Message, state: FSMContext):
     )
     await state.set_state(TaskTimer.waiting_msg_to_all_message)
 
-    
+
 @dp.message(Command("stats"))
 async def admin_stats(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -1198,7 +1085,6 @@ async def admin_stats(message: types.Message):
         return
 
     stats = get_statistics()
-
     report = (
         "📊 СТАТИСТИКА БОТА\n\n"
         f"👥 Всего пользователей: {stats['total_users']}\n"
@@ -1207,7 +1093,6 @@ async def admin_stats(message: types.Message):
         f"⏱️ Всего часов: {stats['total_hours']}\n"
         f"💰 Среднее/пользователя: {stats['avg_hours']} часов\n"
     )
-
     await message.answer(report, reply_markup=get_main_keyboard())
 
 
@@ -1230,7 +1115,6 @@ async def admin_user_list(message: types.Message):
         return
 
     report = f"📋 ВСЕ ПОЛЬЗОВАТЕЛИ ({len(users)})\n\n"
-
     for idx, user in enumerate(users, 1):
         report += (
             f"{idx}️⃣ @{user['username']} | {user['first_name']} | "
@@ -1259,7 +1143,6 @@ async def admin_user_info(message: types.Message):
         return
 
     stats = get_user_stats(user_id)
-
     report = (
         "👤 ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ\n\n"
         f"Username: @{stats['username']}\n"
@@ -1271,7 +1154,6 @@ async def admin_user_info(message: types.Message):
         f"Среднее время/задача: {stats['avg_minutes']} минут\n"
         f"Последняя активность: {stats['last_activity']}\n"
     )
-
     await message.answer(report, reply_markup=get_main_keyboard())
 
 
@@ -1294,13 +1176,12 @@ async def admin_help(message: types.Message):
         "/msg_to_all - Рассылка всем пользователям\n"
         "/admin_help - Эта справка\n"
     )
-
     await message.answer(help_text, reply_markup=get_main_keyboard())
 
 
 @dp.message(Command("broadcast"))
 async def start_broadcast(message: types.Message, state: FSMContext):
-    """ИСПРАВЛЕНО: Начало рассылки с возможностью отправки фото"""
+    """Начало рассылки с возможностью отправки фото"""
     if message.from_user.id != ADMIN_ID:
         await message.answer(
             "❌ Доступ запрещен. Эта команда только для администратора.",
@@ -1319,15 +1200,13 @@ async def start_broadcast(message: types.Message, state: FSMContext):
 
 @dp.message(TaskTimer.waiting_broadcast_message, F.photo)
 async def send_broadcast_with_photo(message: types.Message, state: FSMContext):
-    """НОВОЕ: Рассылка с фото"""
+    """Рассылка с фото"""
     if message.from_user.id != ADMIN_ID:
         return
 
-    # Получаем ID фото самого высокого качества
     photo_id = message.photo[-1].file_id
     caption = message.caption or ""
 
-    # Получаем пользователей БЕЗ премиума
     non_premium_users = get_non_premium_users()
 
     if not non_premium_users:
@@ -1355,7 +1234,6 @@ async def send_broadcast_with_photo(message: types.Message, state: FSMContext):
                 parse_mode="Markdown" if caption else None,
             )
             success_count += 1
-            # Задержка 50мс между отправками (требование Telegram)
             await asyncio.sleep(0.05)
         except Exception as e:
             error_count += 1
@@ -1377,6 +1255,7 @@ async def msg_to_all_text(message: types.Message, state: FSMContext):
 
     broadcast_text = message.text.strip()
     user_ids = get_all_user_ids()
+
     if not user_ids:
         await state.clear()
         await message.answer(
@@ -1397,7 +1276,7 @@ async def msg_to_all_text(message: types.Message, state: FSMContext):
         try:
             await bot.send_message(user_id, broadcast_text, parse_mode="Markdown")
             success_count += 1
-            await asyncio.sleep(0.05)  # лимиты Telegram
+            await asyncio.sleep(0.05)
         except Exception as e:
             error_count += 1
             print(f"Ошибка отправки пользователю {user_id}: {e}")
@@ -1410,7 +1289,7 @@ async def msg_to_all_text(message: types.Message, state: FSMContext):
         reply_markup=get_main_keyboard(),
     )
 
-    
+
 @dp.message(TaskTimer.waiting_msg_to_all_message, F.photo)
 async def msg_to_all_photo(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -1418,8 +1297,8 @@ async def msg_to_all_photo(message: types.Message, state: FSMContext):
 
     photo_id = message.photo[-1].file_id
     caption = message.caption or ""
-
     user_ids = get_all_user_ids()
+
     if not user_ids:
         await state.clear()
         await message.answer(
@@ -1458,17 +1337,14 @@ async def msg_to_all_photo(message: types.Message, state: FSMContext):
         reply_markup=get_main_keyboard(),
     )
 
-    
-    
+
 @dp.message(TaskTimer.waiting_broadcast_message, F.text)
 async def send_broadcast_text(message: types.Message, state: FSMContext):
-    """ИСПРАВЛЕНО: Рассылка только текста (БЕЗ премиум пользователей)"""
+    """Рассылка только текста (БЕЗ премиум пользователей)"""
     if message.from_user.id != ADMIN_ID:
         return
 
     broadcast_text = message.text.strip()
-
-    # Получаем пользователей БЕЗ премиума
     non_premium_users = get_non_premium_users()
 
     if not non_premium_users:
@@ -1491,7 +1367,6 @@ async def send_broadcast_text(message: types.Message, state: FSMContext):
         try:
             await bot.send_message(user_id, broadcast_text, parse_mode="Markdown")
             success_count += 1
-            # Задержка 50мс между отправками (требование Telegram API)
             await asyncio.sleep(0.05)
         except Exception as e:
             error_count += 1
@@ -1545,7 +1420,6 @@ async def admin_set_premium(message: types.Message):
                 "❌ Пользователь не найден.",
                 reply_markup=get_main_keyboard(),
             )
-
     except ValueError:
         await message.answer(
             "❌ Неверный формат. Пример: /premium 123456 1",
@@ -1563,13 +1437,10 @@ async def handle_calendar_navigation(callback: types.CallbackQuery, state: FSMCo
             return
 
         year, month = int(parts[1]), int(parts[2])
-
         await callback.message.edit_reply_markup(
             reply_markup=get_calendar_keyboard(year, month)
         )
-
         await callback.answer()
-
     except (ValueError, IndexError):
         await callback.answer("Ошибка при обработке даты", show_alert=False)
 
@@ -1584,14 +1455,11 @@ async def handle_date_selection(callback: types.CallbackQuery, state: FSMContext
 
         year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
         selected_date = date(year, month, day)
-
         user_id = callback.from_user.id
 
         await callback.message.delete()
         await state.clear()
-
         await send_report_for_date(user_id, selected_date, callback.message)
-
     except (ValueError, IndexError):
         await callback.answer("Ошибка при обработке даты", show_alert=False)
 
@@ -1609,57 +1477,40 @@ async def handle_task_selection(callback: types.CallbackQuery, state: FSMContext
 
         await callback.message.delete()
         await state.clear()
-
         await send_report_for_task(user_id, task_number, callback.message)
-
     except (ValueError, IndexError):
-        await callback.answer("Ошибка при обработке выбора", show_alert=False)
+        await callback.answer("Ошибка при обработке задачи", show_alert=False)
 
 
 @dp.callback_query(F.data == "cancel_calendar")
-async def handle_calendar_cancel(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
+async def cancel_calendar(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.delete()
+    await state.clear()
     await callback.message.answer(
-        "❌ Отменено.",
+        "❌ Выбор даты отменен.",
         reply_markup=get_main_keyboard(),
     )
-    await callback.answer()
 
 
 @dp.callback_query(F.data == "cancel_tasks")
-async def handle_tasks_cancel(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
+async def cancel_tasks(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.delete()
+    await state.clear()
     await callback.message.answer(
-        "❌ Отменено.",
+        "❌ Выбор задачи отменен.",
         reply_markup=get_main_keyboard(),
     )
-    await callback.answer()
 
 
 @dp.callback_query(F.data == "noop")
-async def handle_noop(callback: types.CallbackQuery):
+async def noop_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# ================== ФОЛБЕК ==================
-@dp.message()
-async def ignore_messages(message: types.Message):
-    user_id = message.from_user.id
-
-    if user_id in active_timers:
-        await message.answer("⏳ Таймер работает! Нажми '⏹️ Стоп' для завершения.")
-    else:
-        await message.answer(
-            "Используй основное меню",
-            reply_markup=get_main_keyboard(),
-        )
-
-
-# ================== MAIN ==================
+# ================== ЗАПУСК БОТА ==================
 async def main():
-    await dp.start_polling(bot, timeout=20)
+    print("🤖 Бот запущен!")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
